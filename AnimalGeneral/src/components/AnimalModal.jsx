@@ -19,6 +19,14 @@ function AnimalModal({ animal, favorite, onFavorite, onClose }) {
     };
   }, [onClose]);
 
+  const getValue = (value, fallback = "Not available") => {
+    if (value === null || value === undefined || value === "") {
+      return fallback;
+    }
+
+    return value;
+  };
+
   return (
     <div
       className="modal-backdrop"
@@ -34,7 +42,11 @@ function AnimalModal({ animal, favorite, onFavorite, onClose }) {
         </button>
 
         <div className="modal-image">
-          <img src={animal.image} alt={animal.name} />
+          {animal.image ? (
+            <img src={animal.image} alt={animal.name} />
+          ) : (
+            <div className="modal-image-placeholder">🐾</div>
+          )}
 
           <div className="modal-image-gradient" />
 
@@ -54,32 +66,44 @@ function AnimalModal({ animal, favorite, onFavorite, onClose }) {
             <button
               className={favorite ? "modal-favorite active" : "modal-favorite"}
               onClick={onFavorite}
+              aria-label={
+                favorite ? "Remove from favorites" : "Add to favorites"
+              }
             >
               {favorite ? "♥" : "♡"}
             </button>
           </div>
 
-          <p className="modal-description">{animal.description}</p>
+          <p className="modal-description">
+            {getValue(
+              animal.description,
+              "No description is available for this species yet.",
+            )}
+          </p>
 
           <div className="detail-grid">
             <div>
               <span>Classification</span>
-              <strong>{animal.category}</strong>
+
+              <strong>{getValue(animal.category)}</strong>
             </div>
 
             <div>
               <span>Conservation</span>
-              <strong>{animal.status}</strong>
+
+              <strong>{getValue(animal.status)}</strong>
             </div>
 
             <div>
               <span>Habitat</span>
-              <strong>{animal.location}</strong>
+
+              <strong>{getValue(animal.location)}</strong>
             </div>
 
             <div>
               <span>Diet</span>
-              <strong>{animal.diet}</strong>
+
+              <strong>{getValue(animal.diet)}</strong>
             </div>
           </div>
 
@@ -93,10 +117,16 @@ function AnimalModal({ animal, favorite, onFavorite, onClose }) {
             </button>
           </div>
 
-          <p className="data-note">
-            This profile is currently using frontend development data. In the
-            next stage, this information will come from our animal API.
-          </p>
+          {animal.wikipediaUrl && (
+            <a
+              className="data-source-link"
+              href={animal.wikipediaUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Read more about this species →
+            </a>
+          )}
         </div>
       </div>
     </div>

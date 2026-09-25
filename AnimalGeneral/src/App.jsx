@@ -16,60 +16,34 @@ function App() {
   const [selectedAnimal, setSelectedAnimal] = useState(null);
   const [showFavorites, setShowFavorites] = useState(false);
 
-  const { animals, loading } = useAnimals();
+  // The search term is now sent to our backend API.
+  const { animals, loading, error } = useAnimals(search);
 
   const { favorites, toggleFavorite, isFavorite } = useFavorites();
 
   const categories = useMemo(() => {
     const uniqueCategories = [
-      ...new Set(animals.map((animal) => animal.category)),
+      ...new Set(animals.map((animal) => animal.category).filter(Boolean)),
     ];
 
     return ["All", ...uniqueCategories];
   }, [animals]);
 
   /*
-   * Search is intentionally forgiving.
+   * The backend now performs the animal search.
    *
-   * Example:
-   * "tiger"       -> Bengal Tiger
-   * "bengal"      -> Bengal Tiger
-   * "panthera"    -> Bengal Tiger
-   * "south asia"  -> Bengal Tiger
-   *
-   * We normalize the text before comparing it.
+   * We only keep category and favorite filtering here.
    */
   const filteredAnimals = useMemo(() => {
-    const query = search.trim().toLowerCase().replace(/\s+/g, " ");
-
     return animals.filter((animal) => {
       const matchesFavorite = !showFavorites || isFavorite(animal.id);
 
       const matchesCategory =
         category === "All" || animal.category === category;
 
-      const searchableText = [
-        animal.name,
-        animal.scientificName,
-        animal.category,
-        animal.location,
-        animal.diet,
-        animal.status,
-        animal.description,
-        ...(animal.aliases || []),
-      ]
-        .join(" ")
-        .toLowerCase();
-
-      const queryWords = query.split(" ").filter(Boolean);
-
-      const matchesSearch =
-        queryWords.length === 0 ||
-        queryWords.every((word) => searchableText.includes(word));
-
-      return matchesFavorite && matchesCategory && matchesSearch;
+      return matchesFavorite && matchesCategory;
     });
-  }, [animals, search, category, showFavorites, isFavorite]);
+  }, [animals, category, showFavorites, isFavorite]);
 
   const handleExplore = () => {
     setShowFavorites(false);
@@ -96,6 +70,12 @@ function App() {
     setCategory(newCategory);
   };
 
+  const handleSearchChange = (value) => {
+    setShowFavorites(false);
+    setCategory("All");
+    setSearch(value);
+  };
+
   return (
     <div className="app">
       <Navbar
@@ -108,10 +88,7 @@ function App() {
       <main>
         <Hero
           search={search}
-          setSearch={(value) => {
-            setShowFavorites(false);
-            setSearch(value);
-          }}
+          setSearch={handleSearchChange}
           onExplore={handleExplore}
           animalCount={animals.length}
         />
@@ -139,7 +116,9 @@ function App() {
                 <p>
                   {showFavorites
                     ? "The species you've saved for later."
-                    : "Discover fascinating species from forests, oceans, mountains and skies."}
+                    : search
+                      ? `Results for "${search}"`
+                      : "Search for any animal species and discover fascinating biodiversity from around the world."}
                 </p>
               </div>
 
@@ -172,6 +151,22 @@ function App() {
                 >
                   Explore animals
                   <span>→</span>
+                </button>
+              </div>
+            ) : error ? (
+              <div className="empty-state">
+                <div className="empty-icon">!</div>
+
+                <h3>Something went wrong</h3>
+
+                <p>{error}</p>
+
+                <button
+                  className="primary-button empty-action"
+                  onClick={() => setSearch(search)}
+                >
+                  Try again
+                  <span>↻</span>
                 </button>
               </div>
             ) : (
@@ -215,7 +210,6 @@ function App() {
                   <div className="orbit orbit-one" />
                   <div className="orbit orbit-two" />
                   <div className="orbit orbit-three" />
-
                   <div className="discover-animal">🦁</div>
                 </div>
               </div>
