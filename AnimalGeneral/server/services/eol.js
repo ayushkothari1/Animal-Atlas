@@ -3,20 +3,31 @@ const EOL_API = "https://eol.org/api";
 async function request(endpoint, params = {}) {
   const searchParams = new URLSearchParams(params);
 
-  const response = await fetch(
-    `${EOL_API}${endpoint}?${searchParams.toString()}`,
-    {
-      headers: {
-        "User-Agent": "AnimalAtlas/1.0 (animal information explorer)",
+  const controller = new AbortController();
+
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, 5000);
+
+  try {
+    const response = await fetch(
+      `${EOL_API}${endpoint}?${searchParams.toString()}`,
+      {
+        headers: {
+          "User-Agent": "AnimalAtlas/1.0",
+        },
+        signal: controller.signal,
       },
-    },
-  );
+    );
 
-  if (!response.ok) {
-    throw new Error(`EOL API error: ${response.status}`);
+    if (!response.ok) {
+      throw new Error(`EOL API error: ${response.status}`);
+    }
+
+    return await response.json();
+  } finally {
+    clearTimeout(timeout);
   }
-
-  return response.json();
 }
 
 function cleanText(text) {
@@ -26,37 +37,148 @@ function cleanText(text) {
 
   return String(text)
     .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function extractDescription(data) {
-  const pages = data?.results || [];
+function getText(item) {
+  return cleanText(
+    item?.description || item?.objectURI || item?.dataValue || item?.value,
+  );
+}
 
-  for (const page of pages) {
-    const sections = page?.dataObjects || [];
+function getMetadataText(item) {
+  const fields = [
+    item?.subject,
+    item?.title,
+    item?.name,
+    item?.term,
+    item?.predicate,
+    item?.measurement,
+    item?.value,
+    item?.dataValue,
+    item?.description,
+  ];
 
-    for (const item of sections) {
-      const text = cleanText(item?.description);
+  return fields
+    .filter(Boolean)
+    .map((value) => String(value).toLowerCase())
+    .join(" ");
+}
 
-      if (text && text.length > 80) {
-        return {
-          text,
-          source:
-            item?.agents?.[0]?.full_name ||
-            item?.source ||
-            "Encyclopedia of Life",
+function findBestText(dataObjects, keywords) {
+  const candidates = [];
 
-          sourceUrl:
-            item?.source_url || page?.identifier
-              ? `https://eol.org/pages/${page.identifier}`
-              : null,
-        };
-      }
+  for (const item of dataObjects) {
+    const text = getText(item);
+
+    if (!text || text.length < 30) {
+      continue;
     }
+
+    const metadata = getMetadataText(item);
+
+    const matchedKeywords = keywords.filter((keyword) =>
+      metadata.includes(keyword),
+    );
+
+    if (matchedKeywords.length === 0) {
+      continue;
+    }
+
+    let score = matchedKeywords.length * 10;
+
+    if (item?.subject) {
+      score += 5;
+    }
+
+    if (item?.title) {
+      score += 5;
+    }
+
+    if (text.length >= 80) {
+      score += 3;
+    }
+
+    candidates.push({
+      text,
+      score,
+    });
   }
 
-  return null;
+  candidates.sort((a, b) => b.score - a.score);
+
+  return candidates[0]?.text || null;
+}
+
+function findGeneralDescription(dataObjects) {
+  const candidates = [];
+
+  for (const item of dataObjects) {
+    const text = getText(item);
+
+    if (!text || text.length < 80) {
+      continue;
+    }
+
+    candidates.push(text);
+  }
+
+  candidates.sort((a, b) => {
+    const aScore = a.length >= 150 && a.length <= 1200 ? 10 : 0;
+
+    const bScore = b.length >= 150 && b.length <= 1200 ? 10 : 0;
+
+    return bScore - aScore;
+  });
+
+  return candidates[0] || null;
+}
+
+function findSourceUrl(item) {
+  return (
+    item?.source ||
+    item?.reference ||
+    item?.source_url ||
+    item?.identifier ||
+    null
+  );
+}
+
+function findBestItem(dataObjects, keywords) {
+  const candidates = [];
+
+  for (const item of dataObjects) {
+    const text = getText(item);
+
+    if (!text || text.length < 30) {
+      continue;
+    }
+
+    const metadata = getMetadataText(item);
+
+    const matchedKeywords = keywords.filter((keyword) =>
+      metadata.includes(keyword),
+    );
+
+    if (!matchedKeywords.length) {
+      continue;
+    }
+
+    candidates.push({
+      item,
+      text,
+      score: matchedKeywords.length,
+    });
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+
+  return candidates[0] || null;
 }
 
 export async function searchEOL(scientificName) {
@@ -66,10 +188,10 @@ export async function searchEOL(scientificName) {
 
   try {
     /*
-     * First find the EOL page associated
-     * with the scientific name.
+     * Step 1:
+     * Find the EOL species page.
      */
-    const searchData = await request("/search", {
+    const searchData = await request("/search/1.0.json", {
       q: scientificName,
       exact: "true",
       page: 1,
@@ -82,32 +204,102 @@ export async function searchEOL(scientificName) {
       return null;
     }
 
-    /*
-     * Get detailed information from the
-     * most relevant EOL result.
-     */
-    const firstResult = results[0];
+    const result = results[0];
 
-    const identifier = firstResult?.id || firstResult?.identifier;
+    const pageId = result?.id;
 
-    if (!identifier) {
+    if (!pageId) {
       return null;
     }
 
-    const pageData = await request(`/pages/${identifier}/data`, {
-      taxonomy: "true",
+    /*
+     * Step 2:
+     * Request the detailed EOL page.
+     */
+    const pageData = await request(`/pages/1.0/${pageId}.json`, {
+      details: "true",
       images: "false",
       videos: "false",
       sounds: "false",
       maps: "false",
       text: "true",
-      details: "true",
-      references: "false",
+      references: "true",
+      taxonomy: "true",
     });
 
-    return extractDescription(pageData);
+    const dataObjects = pageData?.dataObjects || [];
+
+    /*
+     * General description.
+     */
+    const description = findGeneralDescription(dataObjects);
+
+    /*
+     * Habitat / distribution / ecology.
+     */
+    const habitatItem = findBestItem(dataObjects, [
+      "habitat",
+      "distribution",
+      "ecology",
+      "environment",
+      "range",
+      "biome",
+      "geographic range",
+      "geographical range",
+    ]);
+
+    /*
+     * Diet / feeding.
+     */
+    const dietItem = findBestItem(dataObjects, [
+      "diet",
+      "feeding",
+      "food",
+      "trophic",
+      "nutrition",
+      "foraging",
+      "prey",
+      "feeding behavior",
+    ]);
+
+    /*
+     * Conservation.
+     */
+    const conservationItem = findBestItem(dataObjects, [
+      "conservation",
+      "threat",
+      "iucn",
+      "red list",
+      "endangered",
+      "vulnerable",
+      "population status",
+    ]);
+
+    return {
+      description,
+
+      habitat: habitatItem?.text || null,
+
+      diet: dietItem?.text || null,
+
+      conservation: conservationItem?.text || null,
+
+      habitatSource: findSourceUrl(habitatItem?.item),
+
+      dietSource: findSourceUrl(dietItem?.item),
+
+      conservationSource: findSourceUrl(conservationItem?.item),
+
+      source: "Encyclopedia of Life",
+
+      sourceUrl: `https://eol.org/pages/${pageId}`,
+    };
   } catch (error) {
-    console.error("EOL API error:", error.message);
+    if (error.name === "AbortError") {
+      console.error("EOL request timed out.");
+    } else {
+      console.error("EOL API error:", error.message);
+    }
 
     return null;
   }

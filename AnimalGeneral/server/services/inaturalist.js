@@ -14,6 +14,8 @@ async function request(endpoint) {
 }
 
 function normalizeAnimal(taxon) {
+  const conservationStatus = taxon.conservation_status;
+
   return {
     id: taxon.id,
 
@@ -32,76 +34,30 @@ function normalizeAnimal(taxon) {
       taxon.default_photo?.square_url ||
       null,
 
+    conservation:
+      conservationStatus?.status_name ||
+      conservationStatus?.iucn_status_name ||
+      null,
+
     wikipediaUrl: taxon.wikipedia_url || null,
 
     inaturalistUrl: `https://www.inaturalist.org/taxa/${taxon.id}`,
+
+    description: null,
+
+    habitat: null,
+
+    diet: null,
   };
 }
 
-async function enrichAnimal(animal) {
-  /*
-   * Try EOL first because it is designed
-   * specifically around biodiversity information.
-   */
-  const eol = await searchEOL(animal.scientificName);
-
-  if (eol?.text) {
-    return {
-      ...animal,
-
-      description: eol.text,
-
-      descriptionSource: eol.source || "Encyclopedia of Life",
-
-      descriptionSourceUrl: eol.sourceUrl || null,
-    };
-  }
-
-  /*
-   * If EOL doesn't have useful information,
-   * try Wikipedia using both common and
-   * scientific names.
-   */
-  const wikipedia = await getWikipediaSummary(
-    animal.name,
-    animal.scientificName,
-  );
-
-  if (wikipedia) {
-    return {
-      ...animal,
-
-      description:
-        wikipedia.extract ||
-        wikipedia.description ||
-        "No description available.",
-
-      descriptionSource: "Wikipedia",
-
-      descriptionSourceUrl: wikipedia.wikipediaUrl || null,
-
-      wikipediaUrl: wikipedia.wikipediaUrl || animal.wikipediaUrl,
-
-      image: animal.image || wikipedia.image || null,
-    };
-  }
-
-  /*
-   * Nothing was found in either source.
-   * We explicitly keep the missing state rather
-   * than inventing information.
-   */
-  return {
-    ...animal,
-
-    description: "No description available.",
-
-    descriptionSource: null,
-
-    descriptionSourceUrl: null,
-  };
-}
-
+/*
+ * Search only.
+ *
+ * IMPORTANT:
+ * This function does NOT call EOL or Wikipedia.
+ * That keeps search fast.
+ */
 export async function searchAnimals(query) {
   const params = new URLSearchParams({
     q: query,
@@ -170,11 +126,103 @@ export async function searchAnimals(query) {
     .slice(0, 24)
     .map(({ taxon }) => normalizeAnimal(taxon));
 
-  const enrichedAnimals = await Promise.all(animals.map(enrichAnimal));
-
-  return enrichedAnimals;
+  return animals;
 }
 
+/*
+ * Fetch one detailed animal.
+ *
+ * This is where we can safely use:
+ *
+ * iNaturalist
+ * EOL
+ * Wikipedia
+ *
+ * because this happens for ONE animal,
+ * not 24 animals at once.
+ */
+export async function getAnimalDetails(animalId) {
+  const data = await request(`/taxa/${animalId}`);
+
+  const taxon = data?.results?.[0];
+
+  if (!taxon) {
+    return null;
+  }
+
+  const animal = normalizeAnimal(taxon);
+
+  /*
+   * Try EOL for habitat, diet,
+   * description and other biodiversity data.
+   */
+  let eol = null;
+
+  try {
+    eol = await searchEOL(animal.scientificName);
+  } catch (error) {
+    console.error("EOL details error:", error.message);
+  }
+
+  /*
+   * Start with EOL information.
+   */
+  if (eol) {
+    animal.description = eol.description || null;
+
+    animal.habitat = eol.habitat || null;
+
+    animal.diet = eol.diet || null;
+
+    animal.conservation = animal.conservation || eol.conservation || null;
+
+    animal.descriptionSource = eol.description
+      ? eol.descriptionSource || "Encyclopedia of Life"
+      : null;
+
+    animal.habitatSource = eol.habitat
+      ? eol.habitatSource || "Encyclopedia of Life"
+      : null;
+
+    animal.dietSource = eol.diet
+      ? eol.dietSource || "Encyclopedia of Life"
+      : null;
+  }
+
+  /*
+   * If EOL didn't provide a description,
+   * try Wikipedia.
+   */
+  if (!animal.description) {
+    try {
+      const wikipedia = await getWikipediaSummary(
+        animal.name,
+        animal.scientificName,
+      );
+
+      if (wikipedia) {
+        animal.description = wikipedia.extract || wikipedia.description || null;
+
+        animal.descriptionSource = animal.description ? "Wikipedia" : null;
+
+        animal.wikipediaUrl = wikipedia.wikipediaUrl || animal.wikipediaUrl;
+
+        animal.image = animal.image || wikipedia.image || null;
+      }
+    } catch (error) {
+      console.error("Wikipedia details error:", error.message);
+    }
+  }
+
+  return animal;
+}
+
+/*
+ * Featured animals.
+ *
+ * For now we use iNaturalist only so
+ * the homepage remains fast.
+ */
 export async function getFeaturedAnimals() {
   const params = new URLSearchParams({
     rank: "species",
@@ -190,9 +238,5 @@ export async function getFeaturedAnimals() {
 
   const data = await request(`/taxa?${params.toString()}`);
 
-  const animals = data.results.map(normalizeAnimal);
-
-  const enrichedAnimals = await Promise.all(animals.map(enrichAnimal));
-
-  return enrichedAnimals;
+  return data.results.map(normalizeAnimal);
 }
