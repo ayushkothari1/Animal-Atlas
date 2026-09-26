@@ -1,4 +1,5 @@
 import { getWikipediaSummary } from "./wikipedia.js";
+import { searchEOL } from "./eol.js";
 
 const INATURALIST_API = "https://api.inaturalist.org/v1";
 
@@ -37,43 +38,70 @@ function normalizeAnimal(taxon) {
   };
 }
 
-/*
- * Add information from Wikipedia.
- *
- * iNaturalist helps us discover the species.
- * Wikipedia gives us a human-readable description.
- */
 async function enrichAnimal(animal) {
-  const wikipedia = await getWikipediaSummary(animal.name);
+  /*
+   * Try EOL first because it is designed
+   * specifically around biodiversity information.
+   */
+  const eol = await searchEOL(animal.scientificName);
 
-  if (!wikipedia) {
+  if (eol?.text) {
     return {
       ...animal,
 
-      description: "No description available.",
+      description: eol.text,
+
+      descriptionSource: eol.source || "Encyclopedia of Life",
+
+      descriptionSourceUrl: eol.sourceUrl || null,
     };
   }
 
+  /*
+   * If EOL doesn't have useful information,
+   * try Wikipedia using both common and
+   * scientific names.
+   */
+  const wikipedia = await getWikipediaSummary(
+    animal.name,
+    animal.scientificName,
+  );
+
+  if (wikipedia) {
+    return {
+      ...animal,
+
+      description:
+        wikipedia.extract ||
+        wikipedia.description ||
+        "No description available.",
+
+      descriptionSource: "Wikipedia",
+
+      descriptionSourceUrl: wikipedia.wikipediaUrl || null,
+
+      wikipediaUrl: wikipedia.wikipediaUrl || animal.wikipediaUrl,
+
+      image: animal.image || wikipedia.image || null,
+    };
+  }
+
+  /*
+   * Nothing was found in either source.
+   * We explicitly keep the missing state rather
+   * than inventing information.
+   */
   return {
     ...animal,
 
-    description:
-      wikipedia.extract || wikipedia.description || "No description available.",
+    description: "No description available.",
 
-    wikipediaUrl: wikipedia.wikipediaUrl || animal.wikipediaUrl,
+    descriptionSource: null,
 
-    // Prefer the Wikipedia image only
-    // when iNaturalist doesn't have one.
-    image: animal.image || wikipedia.image || null,
+    descriptionSourceUrl: null,
   };
 }
 
-/*
- * Search animal names.
- *
- * iNaturalist is used here for discovering
- * what species a user means by a common name.
- */
 export async function searchAnimals(query) {
   const params = new URLSearchParams({
     q: query,
@@ -111,48 +139,26 @@ export async function searchAnimals(query) {
 
       let score = 0;
 
-      /*
-       * Exact common-name match.
-       *
-       * "axolotl" → "Axolotl"
-       */
       if (commonName === searchTerm) {
         score += 1000;
       }
 
-      /*
-       * Common name starts with query.
-       */
       if (commonName.startsWith(searchTerm)) {
         score += 500;
       }
 
-      /*
-       * Query appears anywhere
-       * in common name.
-       */
       if (commonName.includes(searchTerm)) {
         score += 200;
       }
 
-      /*
-       * Exact scientific-name match.
-       */
       if (scientificName === searchTerm) {
         score += 1000;
       }
 
-      /*
-       * Scientific name contains query.
-       */
       if (scientificName.includes(searchTerm)) {
         score += 100;
       }
 
-      /*
-       * Keep iNaturalist's original relevance
-       * as a small tie-breaker.
-       */
       score += Math.max(0, 50 - index);
 
       return {
@@ -164,20 +170,11 @@ export async function searchAnimals(query) {
     .slice(0, 24)
     .map(({ taxon }) => normalizeAnimal(taxon));
 
-  /*
-   * Get Wikipedia information for each result.
-   *
-   * Promise.all allows the requests to happen
-   * concurrently instead of one after another.
-   */
   const enrichedAnimals = await Promise.all(animals.map(enrichAnimal));
 
   return enrichedAnimals;
 }
 
-/*
- * Featured animals.
- */
 export async function getFeaturedAnimals() {
   const params = new URLSearchParams({
     rank: "species",
