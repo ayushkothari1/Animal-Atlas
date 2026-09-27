@@ -8,7 +8,7 @@ import AnimalModal from "./components/AnimalModal";
 import Footer from "./components/Footer";
 
 import useAnimals from "./hooks/useAnimals";
-import useFavorites from "./hooks/useFavorites";
+import { useFavorites } from "./hooks/useFavorites";
 
 function App() {
   const [search, setSearch] = useState("");
@@ -35,15 +35,19 @@ function App() {
    * We only keep category and favorite filtering here.
    */
   const filteredAnimals = useMemo(() => {
-    return animals.filter((animal) => {
-      const matchesFavorite = !showFavorites || isFavorite(animal.id);
+    // Favorites come directly from localStorage.
+    // They must not depend on the current API search results.
+    if (showFavorites) {
+      return favorites;
+    }
 
+    return animals.filter((animal) => {
       const matchesCategory =
         category === "All" || animal.category === category;
 
-      return matchesFavorite && matchesCategory;
+      return matchesCategory;
     });
-  }, [animals, category, showFavorites, isFavorite]);
+  }, [animals, favorites, category, showFavorites]);
 
   const handleExplore = () => {
     setShowFavorites(false);
